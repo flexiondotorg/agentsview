@@ -98,7 +98,6 @@ function createBaseVirtualizer<
 
     cacheKeyChanged = false;
     if (opts.measureCacheKey !== lastMeasureCacheKey) {
-      // @ts-expect-error accessing private itemSizeCache
       instance.itemSizeCache = new Map();
       cacheKeyChanged = true;
     }
