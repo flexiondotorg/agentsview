@@ -120,6 +120,57 @@ function Get-LatestVersion {
     return $Matches[1]
 }
 
+function Test-ReleaseAsset {
+    # Returns $true when the given release asset URL exists (HTTP 2xx),
+    # following the redirect to the storage backend. Used to detect
+    # whether a native build is published for the detected architecture.
+    param([string]$Url)
+
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
+
+    $params = @{
+        Uri = $Url
+        Method = 'Head'
+        ErrorAction = 'Stop'
+    }
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        $params.UseBasicParsing = $true
+    }
+
+    try {
+        $response = Invoke-WebRequest @params
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+    } catch {
+        return $false
+    }
+}
+
+function Resolve-ReleaseArch {
+    # Returns the release arch to install for the detected CPU arch.
+    # Prefers a native build, but falls back to amd64 on arm64 because
+    # Windows on ARM transparently runs x64 binaries under emulation and
+    # no native windows/arm64 asset is published for every release.
+    # Returns $null when no usable asset exists.
+    param([string]$DetectedArch, [string]$Version)
+
+    $candidates = @($DetectedArch)
+    if ($DetectedArch -eq 'arm64') {
+        $candidates += 'amd64'
+    }
+
+    $versionNum = $Version.TrimStart('v')
+    foreach ($candidate in $candidates) {
+        $name = "agentsview_${versionNum}_windows_${candidate}.zip"
+        $url = "https://github.com/$repo/releases/download/$Version/$name"
+        if (Test-ReleaseAsset $url) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
 function Get-InstallDir {
     if ($env:AGENTSVIEW_INSTALL_DIR) {
         return $env:AGENTSVIEW_INSTALL_DIR
@@ -161,6 +212,17 @@ function Install-Agentsview {
 
     $version = Get-LatestVersion
     Write-Info "Latest version: $version"
+
+    $resolvedArch = Resolve-ReleaseArch -DetectedArch $arch -Version $version
+    if (-not $resolvedArch) {
+        Write-Err "Error: No Windows release asset found for $version (detected windows/$arch)."
+        Write-Err "See https://github.com/$repo for build-from-source instructions."
+        exit 1
+    }
+    if ($resolvedArch -ne $arch) {
+        Write-Warn "No native windows/$arch build for $version; installing windows/$resolvedArch (runs under emulation)."
+        $arch = $resolvedArch
+    }
 
     $versionNum = $version.TrimStart('v')
     $archiveName = "agentsview_${versionNum}_windows_${arch}.zip"
